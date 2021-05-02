@@ -1,0 +1,141 @@
+service: notify-service
+frameworkVersion: '2'
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  lambdaHashingVersion: 20201221
+  stage: dev
+  region: us-east-1
+  environment:
+    QUEUE_NAME: NotificationQueue
+    DYNAMODB_TABLE_NAME: UserDetails
+
+package:
+ patterns:
+   - '!coverage'
+   - '!tests'
+   - '!README.md'
+   - '!LICENSE'
+   - '!.npmignore'
+   - '!.nyc_output'
+
+functions:
+  notifier:
+    handler: notifier.poller
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - NotificationQueue
+              - Arn
+    role: NotifierRole
+    environment:
+      SMTP_PORT: ${env:SMTP_PORT}
+      SMTP_HOST: ${env:SMTP_HOST}
+      SMTP_USER: ${env:SMTP_USER}
+      SMTP_PASS: ${env:SMTP_PASS}
+      FROM_EMAIL_ADDRESS: ${env:FROM_EMAIL_ADDRESS}
+      TWILIO_ACCOUNT_SID: ${env:TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${env:TWILIO_AUTH_TOKEN}
+      SMS_FROM_NUMBER: ${env:SMS_FROM_NUMBER}
+      WHATSAPP_FROM_NUMBER: ${env:WHATSAPP_FROM_NUMBER}
+  manager:
+    handler: manager.handler
+    events:
+      - http:
+          path: /api/v1/user/{userId}/notify
+          method: post
+      - http:
+          path: /api/v1/user/{userId}/subscribe
+          method: put
+      - http:
+          path: /api/v1/user/{userId}/unsubscribe
+          method: put
+    role: ManagerRole
+    environment:
+      QUEUE_URL: !Sub "https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${self:provider.environment.QUEUE_NAME}"
+      DYNAMODB_TABLE_NAME: ${self:provider.environment.DYNAMODB_TABLE_NAME}
+
+resources:
+  Resources:
+    NotifierRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Path: /
+        RoleName: NotifierRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: notifierPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*:*"
+                - Effect: Allow
+                  Action:
+                    - sqs:DeleteMessage
+                    - sqs:ReceiveMessage
+                    - sqs:GetQueueAttributes
+                  Resource: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:NotificationQueue"
+    ManagerRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Path: /
+        RoleName: ManagerRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: managerPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*:*"
+                - Effect: Allow
+                  Action:
+                    - sqs:SendMessage
+                  Resource: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:NotificationQueue"
+                - Effect: Allow
+                  Action:
+                    - dynamodb:GetItem
+                    - dynamodb:PutItem
+                  Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${self:provider.environment.DYNAMODB_TABLE_NAME}"
+    NotificationQueue:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: ${self:provider.environment.QUEUE_NAME}
+    DynamoDbTable:
+      Type: 'AWS::DynamoDB::Table'
+      Properties:
+        AttributeDefinitions:
+          -
+            AttributeName: userId
+            AttributeType: S
+        BillingMode: PAY_PER_REQUEST
+        KeySchema:
+          -
+            AttributeName: userId
+            KeyType: HASH
+        TableName: ${self:provider.environment.DYNAMODB_TABLE_NAME}
